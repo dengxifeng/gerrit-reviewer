@@ -417,9 +417,9 @@ def _install_skill():
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if target.exists():
-        answer = input(f"Skill directory already exists: {target}\nOverwrite? [y/N] ").strip().lower()
-        if answer != "y":
-            print("Skipped skill installation.")
+        answer = input(f"Skill already installed at {target}\nKeep current skill? [Y/n] ").strip().lower()
+        if answer not in ("n", "no"):
+            print("Kept current skill.")
             return
         shutil.rmtree(target)
         print(f"Overwritten: {target}")
