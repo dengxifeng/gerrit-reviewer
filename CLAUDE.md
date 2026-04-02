@@ -26,7 +26,7 @@ All source code is under `src/gerrit_reviewer/`:
 - **cli.py** — Main CLI entry point. Subcommands dispatch to `cmd_*` functions. Uses `python-gerrit-api` for REST calls and subprocess git for checkout operations. Repos are cached per-project under `~/.gerrit-reviewer/cache/`.
 - **stream.py** — Event bridge daemon. Connects via paramiko SSH, parses JSON events line-by-line, filters by event type and project/reviewer logic, forwards to OpenClaw `/hooks/gerrit-review` endpoint, and auto-reconnects on SSH failures.
 - **config.py** — Unified YAML config at `~/.gerrit-reviewer/config.yml` with two sections: `gerrit`, `stream`. The `openclaw` section only stores non-sensitive settings (`url`, `agent_id`, `channel`, `to`). The webhook hook token is stored in `~/.openclaw/openclaw.json` under `hooks.token` and read via `get_openclaw_hook_token()`. Supports dotted-key access, type coercion from defaults, sensitive value masking, and env var overrides (in stream.py).
-- **log_utils.py** — Rotating file logger setup for the stream daemon (`~/.gerrit-reviewer/logs/`).
+- **log_utils.py** — Rotating file logger setup for the stream daemon (`~/.gerrit-reviewer/logs/`). Accepts a `level` parameter (default `INFO`); stderr handler is always `INFO`.
 - **skill/SKILL.md** — OpenClaw skill definition. Defines the review workflow (checkout → ACP Claude session → post review) and notification output format.
 - **hooks/transforms/gerrit-review.js** — OpenClaw webhook transform. Converts the incoming webhook payload into a wake action with session key, agent routing, and delivery settings. Installed to `~/.openclaw/hooks/transforms/` during init.
 - **systemd/** — User systemd service file for the stream daemon.
@@ -51,7 +51,7 @@ All source code is under `src/gerrit_reviewer/`:
 - The webhook transform is installed by copying `hooks/transforms/gerrit-review.js` into `~/.openclaw/hooks/transforms/`; the `init` command also configures `openclaw.json` hooks section (`enabled`, `token`, `path`, `allowRequestSessionKey`, `mappings`) via a single `openclaw config set --batch-json` call, generating a random token with `secrets.token_hex(24)`
 - The stream daemon reads the hook token from `~/.openclaw/openclaw.json` (`hooks.token`) via `get_openclaw_hook_token()`; the `OPENCLAW_HOOK_TOKEN` env var can still override it
 - Uninstall flow for systemd services follows the proper order: `stop` → `disable` → delete file → `daemon-reload`
-- Importing `stream.py` initializes file logging immediately via `setup_logging("gerrit-event.log")`
+- Importing `stream.py` initializes file logging at `INFO` via `setup_logging("gerrit-event.log")`; the log level is reconfigured in `main()` from `stream.log_level` config (or `LOG_LEVEL` env var). When set to `DEBUG`, raw Gerrit events are logged to the file; stderr stays at `INFO`.
 - Review scores are constrained to -1/0/+1 in the automated workflow; +2/-2 and submit require explicit user instruction
 
 ## No Tests or Linting

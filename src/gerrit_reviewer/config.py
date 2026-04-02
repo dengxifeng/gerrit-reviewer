@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
         "allowed_events": ["patchset-created"],
         "allowed_projects": [],
         "reconnect_delay": 5,
+        "log_level": "INFO",
     },
     "openclaw": {
         "url": "http://127.0.0.1:18789",

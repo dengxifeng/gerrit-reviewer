@@ -23,6 +23,7 @@ Environment variables override config values for backward compatibility:
     ALLOWED_EVENTS        Override stream.allowed_events (comma-separated)
     ALLOWED_PROJECTS      Override stream.allowed_projects (comma-separated)
     RECONNECT_DELAY       Override stream.reconnect_delay
+    LOG_LEVEL             Override stream.log_level (DEBUG, INFO, WARNING, ERROR)
 """
 
 import argparse
@@ -95,6 +96,7 @@ def _load_stream_settings(config_path: str = None) -> dict:
             p.strip() for p in env("ALLOWED_PROJECTS").split(",") if p.strip()
         ) if env("ALLOWED_PROJECTS") else set(stream.get("allowed_projects", [])),
         "reconnect_delay": int(env("RECONNECT_DELAY") or stream.get("reconnect_delay", 5)),
+        "log_level": env("LOG_LEVEL") or stream.get("log_level", "INFO"),
     }
 
 
@@ -247,6 +249,14 @@ def main():
 
     settings = _load_stream_settings(args.config)
 
+    # Reconfigure log level from config
+    import logging as _logging
+    log_level = getattr(_logging, settings["log_level"].upper(), _logging.INFO)
+    logger.setLevel(log_level)
+    for handler in logger.handlers:
+        if isinstance(handler, _logging.handlers.RotatingFileHandler):
+            handler.setLevel(log_level)
+
     if not settings["ssh_host"] or not settings["ssh_user"]:
         logger.error("gerrit.url and gerrit.username must be set.")
         sys.exit(1)
@@ -272,6 +282,7 @@ def main():
         try:
             ssh_client = connect_ssh(settings)
             for event in stream_events(ssh_client, settings):
+                logger.debug("Raw event: %s", json.dumps(event, ensure_ascii=False))
                 event_type = event.get("type", "")
                 if event_type not in settings["allowed_events"]:
                     continue

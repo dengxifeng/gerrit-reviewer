@@ -12,7 +12,7 @@ MAX_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 3
 
 
-def setup_logging(log_name: str) -> logging.Logger:
+def setup_logging(log_name: str, level: str = "INFO") -> logging.Logger:
     """Setup logger with rotating file + stderr output.
 
     Args:
@@ -25,17 +25,20 @@ def setup_logging(log_name: str) -> logging.Logger:
     log_file = LOG_DIR / log_name
 
     logger = logging.getLogger(log_name.removesuffix(".log"))
-    logger.setLevel(logging.INFO)
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logger.setLevel(log_level)
 
     formatter = logging.Formatter(LOG_FORMAT)
 
     file_handler = RotatingFileHandler(
         log_file, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT,
     )
+    file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(logging.INFO)
     stderr_handler.setFormatter(formatter)
     logger.addHandler(stderr_handler)
 
