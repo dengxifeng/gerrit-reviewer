@@ -445,6 +445,30 @@ HOOK_TRANSFORMS = [
 ]
 
 
+GERRIT_REVIEW_MAPPING = {
+    "match": {"path": "gerrit-review"},
+    "action": "agent",
+    "allowUnsafeExternalContent": True,
+    "transform": {
+        "module": "gerrit-review.js",
+        "export": "transformGerritReview",
+    },
+}
+
+
+def _load_openclaw_json() -> tuple[Path, dict]:
+    """Load openclaw.json, return (path, data)."""
+    path = Path.home() / ".openclaw" / "openclaw.json"
+    if path.exists():
+        return path, json.loads(path.read_text())
+    return path, {}
+
+
+def _save_openclaw_json(path: Path, data: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
 def _install_hooks():
     """Copy hook transform files and configure openclaw.json hooks section."""
     # 1. Install transform files
@@ -458,32 +482,31 @@ def _install_hooks():
         shutil.copy2(src, target)
         print(f"Installed: {target}")
 
-    # 2. Configure openclaw.json hooks via `openclaw config set --batch-json`
-    token = secrets.token_hex(24)
-    batch = json.dumps([
-        {"path": "hooks.enabled", "value": True},
-        {"path": "hooks.token", "value": token},
-        {"path": "hooks.path", "value": "/hooks"},
-        {"path": "hooks.allowRequestSessionKey", "value": True},
-        {"path": "hooks.mappings", "value": [{
-            "match": {"path": "gerrit-review"},
-            "action": "agent",
-            "transform": {
-                "module": "gerrit-review.js",
-                "export": "transformGerritReview",
-            },
-            "allowUnsafeExternalContent": True,
-        }]},
-    ])
-    subprocess.run(
-        ["openclaw", "config", "set", "--batch-json", batch],
-        check=True,
-    )
-    print(f"Configured openclaw hooks (token: {token[:8]}...)")
+    # 2. Configure openclaw.json hooks by editing the file directly
+    oc_path, oc_data = _load_openclaw_json()
+    hooks = oc_data.setdefault("hooks", {})
+
+    hooks["enabled"] = True
+    hooks.setdefault("token", secrets.token_hex(24))
+    hooks.setdefault("path", "/hooks")
+    hooks["allowRequestSessionKey"] = True
+
+    mappings = hooks.setdefault("mappings", [])
+    # Update existing gerrit-review mapping or append
+    for i, m in enumerate(mappings):
+        if m.get("match", {}).get("path") == "gerrit-review":
+            mappings[i] = GERRIT_REVIEW_MAPPING
+            break
+    else:
+        mappings.append(GERRIT_REVIEW_MAPPING)
+
+    _save_openclaw_json(oc_path, oc_data)
+    print(f"Configured openclaw hooks (token: {hooks['token'][:8]}...)")
+    print("Please restart openclaw gateway for changes to take effect.")
 
 
 def _uninstall_hooks():
-    """Remove hook transform files and openclaw.json hooks config."""
+    """Remove hook transform files and gerrit-review mapping from openclaw.json."""
     target_dir = Path.home() / ".openclaw" / "hooks" / "transforms"
 
     for name in HOOK_TRANSFORMS:
@@ -494,8 +517,16 @@ def _uninstall_hooks():
         else:
             print(f"Not installed: {target}")
 
-    subprocess.run(["openclaw", "config", "set", "hooks.enabled", "false", "--strict-json"], check=False)
-    print("Disabled openclaw hooks")
+    oc_path, oc_data = _load_openclaw_json()
+    mappings = oc_data.get("hooks", {}).get("mappings", [])
+    original_len = len(mappings)
+    mappings[:] = [m for m in mappings if m.get("match", {}).get("path") != "gerrit-review"]
+    if len(mappings) < original_len:
+        _save_openclaw_json(oc_path, oc_data)
+        print("Removed gerrit-review mapping from openclaw hooks")
+        print("Please restart openclaw gateway for changes to take effect.")
+    else:
+        print("No gerrit-review mapping found in openclaw hooks")
 
 
 SYSTEMD_SERVICES = [
