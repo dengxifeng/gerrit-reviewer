@@ -1,0 +1,12 @@
+[Unit]
+Description=Gerrit Stream Events Bridge
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=gerrit-reviewer-stream
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

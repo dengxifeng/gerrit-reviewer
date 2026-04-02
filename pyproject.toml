@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gerrit-reviewer"
+version = "0.1.0"
+description = "AI-powered code review for Gerrit"
+requires-python = ">=3.11"
+dependencies = [
+    "python-gerrit-api>=3.0.0",
+    "pyyaml>=6.0",
+    "paramiko>=3.4.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+lark = []  # lark-cli is installed via npm, this is a marker only
+
+[project.scripts]
+gerrit-reviewer-cli = "gerrit_reviewer.cli:main"
+gerrit-reviewer-stream = "gerrit_reviewer.stream:main"
