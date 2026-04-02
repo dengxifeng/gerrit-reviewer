@@ -43,7 +43,7 @@ All source code is under `src/gerrit_reviewer/`:
 - CLI commands print JSON to stdout on success; failures print a plain-text error to stderr and exit with status 1
 - The checkout flow uses git ref format `refs/changes/{short}/{number}/{patchset}` where `short` is the last 2 digits zero-padded
 - `checkout` and `post-review` default to the current patchset unless `--patchset` is provided explicitly
-- The stream daemon forwards prompt text as `/gerrit-reviewer-cli <change_number>` and uses session key `hook:gerrit-review:<change_number>`
+- The stream daemon forwards prompt text as `/gerrit-reviewer <change_number> --patchset <N>` (pinning the exact patchset from the event) and uses session key `hook:gerrit-review:<change_number>`
 - The stream daemon first checks whether the project is in `stream.allowed_projects`; if not, it falls back to checking whether the configured Gerrit user is already a reviewer on the change
 - With the current implementation, an empty `stream.allowed_projects` does not mean "all projects"; it means only changes where the configured user is already a reviewer will pass the filter
 - Config supports both interactive setup (`gerrit-reviewer-cli init`) and non-interactive (`--set key=value`)

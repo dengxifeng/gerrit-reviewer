@@ -21,10 +21,10 @@ The CLI is installed as `gerrit-reviewer-cli`. Default config: `~/.gerrit-review
 ## Trigger Format
 
 ```
-/gerrit-reviewer <change_number>
+/gerrit-reviewer <change_number> [--patchset <N>]
 ```
 
-The change number is all that's needed. Project, branch, subject, and other metadata are retrieved by the `checkout` command.
+The change number is required. When `--patchset` is provided (e.g. from stream events), it pins the review to that specific patchset to avoid racing with newer uploads. Without it, the current patchset is used.
 
 ## Workflow: Review a Change
 
@@ -33,7 +33,7 @@ CRITICAL EXECUTION RULE: When triggered with `/gerrit-reviewer <NUMBER>`, you MU
 ### Step 1: Checkout the patchset
 
 ```bash
-gerrit-reviewer-cli checkout <NUMBER>
+gerrit-reviewer-cli checkout <NUMBER> [--patchset <N>]
 ```
 
 Output:
@@ -114,8 +114,9 @@ cat > /tmp/gerrit-review-<NUMBER>-comments.json << 'EOF'
 <comments JSON from step 2>
 EOF
 
-# Post review
+# Post review (include --patchset if provided in the trigger)
 gerrit-reviewer-cli post-review <NUMBER> \
+  --patchset <PATCHSET> \
   --comments-file /tmp/gerrit-review-<NUMBER>-comments.json \
   --score "Code-Review=<score>" \
   -m "<summary>"

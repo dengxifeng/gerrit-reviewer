@@ -180,6 +180,9 @@ def build_prompt(event: dict) -> str:
     """Build OpenClaw prompt from a Gerrit event."""
     change = event.get("change", {})
     change_number = change.get("number", "unknown")
+    patchset = event.get("patchSet", {}).get("number", "")
+    if patchset:
+        return f"/gerrit-reviewer {change_number} --patchset {patchset}"
     return f"/gerrit-reviewer {change_number}"
 
 
