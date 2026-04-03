@@ -520,6 +520,16 @@ def _config_openclaw():
     acpx_config["permissionMode"] = "approve-all"
     acpx_config["nonInteractivePermissions"] = "deny"
 
+    # 4. Configure tools.exec.pathPrepend so openclaw can find gerrit-reviewer-cli
+    cli_path = shutil.which("gerrit-reviewer-cli")
+    if cli_path:
+        cli_dir = str(Path(cli_path).parent)
+        tools = oc_data.setdefault("tools", {})
+        exec_cfg = tools.setdefault("exec", {})
+        prepend = exec_cfg.setdefault("pathPrepend", [])
+        if cli_dir not in prepend:
+            prepend.append(cli_dir)
+
     _save_openclaw_json(oc_path, oc_data)
     print(f"Configured openclaw hooks (token: {hooks['token'][:8]}...) and enabled ACP")
 
