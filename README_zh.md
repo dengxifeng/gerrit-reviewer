@@ -17,6 +17,14 @@
 - Git
 - 可访问的 Gerrit 实例（需支持 SSH 和 REST API）
 - [OpenClaw](https://openclaw.ai)（用于自动审查工作流）
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — 自动审查工作流依赖 Claude Code，使用前请确保已安装并初始化（`claude` 命令可用）。
+
+> **注意：** 如果使用非 Anthropic 官方 API 的第三方平台，请在 `~/.openclaw/.env` 中添加以下配置：
+>
+> ```bash
+> ANTHROPIC_BASE_URL=https://your-api-provider.example.com
+> ANTHROPIC_AUTH_TOKEN=your-token
+> ```
 
 ## 安装
 

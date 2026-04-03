@@ -17,6 +17,14 @@ AI-powered code review system for Gerrit. It listens to Gerrit events and uses A
 - Git
 - Access to a Gerrit instance (with SSH and REST API)
 - [OpenClaw](https://openclaw.ai) (for automated review workflow)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — The automated review workflow depends on Claude Code. Please ensure Claude Code is installed and initialized (`claude` command available) before use.
+
+> **Note:** If you are using a third-party API provider instead of the official Anthropic API, add the following to `~/.openclaw/.env`:
+>
+> ```bash
+> ANTHROPIC_BASE_URL=https://your-api-provider.example.com
+> ANTHROPIC_AUTH_TOKEN=your-token
+> ```
 
 ## Installation
 
