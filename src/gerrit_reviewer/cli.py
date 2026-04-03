@@ -469,8 +469,8 @@ def _save_openclaw_json(path: Path, data: dict):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
-def _install_hooks():
-    """Copy hook transform files and configure openclaw.json hooks section."""
+def _config_openclaw():
+    """Copy hook transform files and configure openclaw.json (hooks and ACP)."""
     # 1. Install transform files
     transforms_src = Path(files("gerrit_reviewer.hooks.transforms").joinpath(HOOK_TRANSFORMS[0])).parent
     target_dir = Path.home() / ".openclaw" / "hooks" / "transforms"
@@ -500,13 +500,32 @@ def _install_hooks():
     else:
         mappings.append(GERRIT_REVIEW_MAPPING)
 
+    # 3. Enable ACP and acpx plugin
+    acp = oc_data.setdefault("acp", {})
+    acp["enabled"] = True
+    acp.setdefault("backend", "acpx")
+    acp.setdefault("defaultAgent", "claude")
+    allowed = acp.setdefault("allowedAgents", [])
+    if "claude" not in allowed:
+        allowed.append("claude")
+    acp.setdefault("maxConcurrentSessions", 4)
+    acp.setdefault("stream", {"coalesceIdleMs": 300, "maxChunkChars": 1200})
+    acp.setdefault("runtime", {"ttlMinutes": 120})
+
+    plugins = oc_data.setdefault("plugins", {})
+    entries = plugins.setdefault("entries", {})
+    acpx = entries.setdefault("acpx", {})
+    acpx["enabled"] = True
+    acpx_config = acpx.setdefault("config", {})
+    acpx_config["permissionMode"] = "approve-all"
+    acpx_config["nonInteractivePermissions"] = "deny"
+
     _save_openclaw_json(oc_path, oc_data)
-    print(f"Configured openclaw hooks (token: {hooks['token'][:8]}...)")
-    print("Please restart openclaw gateway for changes to take effect.")
+    print(f"Configured openclaw hooks (token: {hooks['token'][:8]}...) and enabled ACP")
 
 
-def _uninstall_hooks():
-    """Remove hook transform files and gerrit-review mapping from openclaw.json."""
+def _unconfig_openclaw():
+    """Remove hook transform files and gerrit-review mapping from openclaw.json (preserves ACP config)."""
     target_dir = Path.home() / ".openclaw" / "hooks" / "transforms"
 
     for name in HOOK_TRANSFORMS:
@@ -611,18 +630,19 @@ def cmd_init(args):
 
     print("==> Installing skill...")
     _install_skill()
-    print("==> Installing hooks...")
-    _install_hooks()
+    print("==> Configuring OpenClaw integration...")
+    _config_openclaw()
     print("==> Installing systemd services...")
     _install_services()
+    print("Please restart openclaw gateway for changes to take effect.")
 
 
 def cmd_uninstall(args):
     """Remove skill, hook transforms, and systemd services."""
     print("==> Removing skill...")
     _uninstall_skill()
-    print("==> Removing hooks...")
-    _uninstall_hooks()
+    print("==> Removing OpenClaw integration...")
+    _unconfig_openclaw()
     print("==> Removing systemd services...")
     _uninstall_services()
 
