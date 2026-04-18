@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Gerrit stream-events → OpenClaw webhooks.
+"""Gerrit stream-events → Hermes webhooks.
 
 Connects to Gerrit via SSH, listens to stream-events,
-and forwards patchset-created events to OpenClaw via /hooks/agent webhook.
+and forwards patchset-created events to Hermes webhook server.
 
 Usage:
     gerrit-reviewer-stream
@@ -15,11 +15,8 @@ Environment variables override config values for backward compatibility:
     GERRIT_SSH_PORT       Override gerrit.ssh_port
     GERRIT_SSH_USER       Override gerrit.username (SSH user)
     GERRIT_SSH_KEY        Override gerrit.ssh_key
-    OPENCLAW_URL          Override openclaw.url
-    OPENCLAW_HOOK_TOKEN   Override hooks.token from openclaw.json
-    OPENCLAW_AGENT_ID     Override openclaw.agent_id
-    DELIVER_CHANNEL       Override openclaw.channel
-    DELIVER_TO            Override openclaw.to
+    HERMES_URL            Override hermes.url
+    HERMES_WEBHOOK_SECRET Override hermes.webhook_secret
     ALLOWED_EVENTS        Override stream.allowed_events (comma-separated)
     ALLOWED_PROJECTS      Override stream.allowed_projects (comma-separated)
     RECONNECT_DELAY       Override stream.reconnect_delay
@@ -27,6 +24,8 @@ Environment variables override config values for backward compatibility:
 """
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import signal
@@ -42,8 +41,7 @@ from gerrit_reviewer.config import (
     DEFAULT_CONFIG_PATH,
     get_gerrit_config,
     get_gerrit_host,
-    get_openclaw_config,
-    get_openclaw_hook_token,
+    get_hermes_config,
     get_stream_config,
     load_config,
 )
@@ -69,7 +67,7 @@ def _load_stream_settings(config_path: str = None) -> dict:
     cfg = load_config(config_path)
     gerrit = get_gerrit_config(cfg)
     stream = get_stream_config(cfg)
-    openclaw = get_openclaw_config(cfg)
+    hermes = get_hermes_config(cfg)
 
     def env(key: str) -> str | None:
         """Get env var, return None if not set."""
@@ -83,11 +81,8 @@ def _load_stream_settings(config_path: str = None) -> dict:
         "gerrit_url": gerrit.get("url", ""),
         "gerrit_username": gerrit.get("username", ""),
         "gerrit_password": gerrit.get("credential", ""),
-        "openclaw_url": env("OPENCLAW_URL") or openclaw.get("url", "http://127.0.0.1:18789"),
-        "openclaw_hook_token": env("OPENCLAW_HOOK_TOKEN") or get_openclaw_hook_token(),
-        "openclaw_agent_id": env("OPENCLAW_AGENT_ID") or openclaw.get("agent_id", "main"),
-        "deliver_channel": env("DELIVER_CHANNEL") or openclaw.get("channel", ""),
-        "deliver_to": env("DELIVER_TO") or openclaw.get("to", ""),
+        "hermes_url": env("HERMES_URL") or hermes.get("url", "http://127.0.0.1:8644"),
+        "hermes_webhook_secret": env("HERMES_WEBHOOK_SECRET") or hermes.get("webhook_secret", ""),
         "allowed_events": set(
             env("ALLOWED_EVENTS").split(",") if env("ALLOWED_EVENTS")
             else stream.get("allowed_events", ["patchset-created"])
@@ -176,14 +171,22 @@ def stream_events(ssh_client: paramiko.SSHClient, settings: dict):
     channel.close()
 
 
-def build_prompt(event: dict) -> str:
-    """Build OpenClaw prompt from a Gerrit event."""
+def build_webhook_payload(event: dict) -> dict:
+    """Build Hermes webhook payload from a Gerrit event."""
     change = event.get("change", {})
-    change_number = change.get("number", "unknown")
-    patchset = event.get("patchSet", {}).get("number", "")
-    if patchset:
-        return f"/gerrit-reviewer {change_number} --patchset {patchset}"
-    return f"/gerrit-reviewer {change_number}"
+    patchset = event.get("patchSet", {})
+
+    payload = {
+        "event_type": "gerrit_patchset_created",
+        "change_number": change.get("number", "unknown"),
+    }
+
+    # Include patchset number if present
+    patchset_num = patchset.get("number")
+    if patchset_num:
+        payload["patchset"] = patchset_num
+
+    return payload
 
 
 def is_self_reviewer(change_number, gerrit_client: GerritClient, settings: dict) -> bool:
@@ -202,35 +205,27 @@ def is_self_reviewer(change_number, gerrit_client: GerritClient, settings: dict)
     return False
 
 
-def forward_to_openclaw(prompt: str, change_number, settings: dict) -> bool:
-    """Send prompt to OpenClaw via /hooks/agent webhook. Returns True on success."""
-    session_key = f"hook:gerrit-review:{change_number}"
+def forward_to_hermes(payload: dict, change_number, settings: dict) -> bool:
+    """Send payload to Hermes webhook. Returns True on success."""
+    url = settings["hermes_url"]
+    secret = settings["hermes_webhook_secret"]
 
-    payload = {
-        "message": prompt,
-        "sessionKey": session_key,
-        "agentId": settings["openclaw_agent_id"],
-        "wakeMode": "now",
-    }
-    if settings.get("deliver_channel") and settings.get("deliver_to"):
-        payload["deliver"] = True
-        payload["channel"] = settings["deliver_channel"]
-        payload["to"] = settings["deliver_to"]
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    payload_bytes = payload_json.encode("utf-8")
+
+    # Compute HMAC signature
+    signature = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings['openclaw_hook_token']}",
+        "X-Webhook-Signature": signature,
     }
 
     try:
         with httpx.Client(timeout=30) as http:
-            resp = http.post(
-                f"{settings['openclaw_url']}/hooks/gerrit-review",
-                json=payload,
-                headers=headers,
-            )
+            resp = http.post(url, content=payload_bytes, headers=headers)
         logger.info(
-            "Forwarded change %s → OpenClaw: %d %s",
+            "Forwarded change %s → Hermes: %d %s",
             change_number, resp.status_code, resp.text[:200],
         )
         return resp.status_code < 400
@@ -242,7 +237,7 @@ def forward_to_openclaw(prompt: str, change_number, settings: dict) -> bool:
 def main():
     parser = argparse.ArgumentParser(
         prog="gerrit-reviewer-stream",
-        description="Gerrit stream-events → OpenClaw webhooks",
+        description="Gerrit stream-events → Hermes webhooks",
     )
     parser.add_argument(
         "--config", default=str(DEFAULT_CONFIG_PATH),
@@ -263,8 +258,8 @@ def main():
     if not settings["ssh_host"] or not settings["ssh_user"]:
         logger.error("gerrit.url and gerrit.username must be set.")
         sys.exit(1)
-    if not settings["openclaw_hook_token"]:
-        logger.error("openclaw.hook_token must be set (config or OPENCLAW_HOOK_TOKEN env var).")
+    if not settings["hermes_webhook_secret"]:
+        logger.error("hermes.webhook_secret must be set (config or HERMES_WEBHOOK_SECRET env var).")
         sys.exit(1)
 
     logger.info("Config: %s", args.config)
@@ -302,8 +297,8 @@ def main():
                     )
                     continue
 
-                prompt = build_prompt(event)
-                forward_to_openclaw(prompt, change_number, settings)
+                payload = build_webhook_payload(event)
+                forward_to_hermes(payload, change_number, settings)
 
         except paramiko.ssh_exception.SSHException as e:
             logger.error("SSH error: %s", e)

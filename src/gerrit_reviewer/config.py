@@ -29,15 +29,12 @@ DEFAULT_CONFIG = {
         "reconnect_delay": 5,
         "log_level": "INFO",
     },
-    "openclaw": {
-        "url": "http://127.0.0.1:18789",
-        "agent_id": "main",
-        "channel": "",
-        "to": "",
+    "hermes": {
+        "deliver": "feishu",
     },
 }
 
-SENSITIVE_KEYS = {"credential"}
+SENSITIVE_KEYS = {"credential", "webhook_secret"}
 
 # Fields to prompt during interactive init, in order.
 # (dotted_key, description)
@@ -48,10 +45,7 @@ INIT_FIELDS = [
     ("gerrit.ssh_port", "Gerrit SSH port"),
     ("gerrit.ssh_key", "SSH private key path"),
     ("gerrit.cache_dir", "Git repo cache directory"),
-    ("openclaw.url", "OpenClaw URL"),
-    ("openclaw.agent_id", "OpenClaw agent ID"),
-    ("openclaw.channel", "Delivery channel (e.g. feishu, optional)"),
-    ("openclaw.to", "Delivery target (e.g. chat ID, optional)"),
+    ("hermes.deliver", "Webhook deliver target (log/feishu/weixin/...)"),
     ("stream.allowed_events", "Allowed events (comma-separated)"),
     ("stream.allowed_projects", "Allowed projects (comma-separated)"),
     ("stream.reconnect_delay", "Reconnect delay in seconds"),
@@ -90,24 +84,10 @@ def get_stream_config(cfg: dict) -> dict:
     return cfg.get("stream", {})
 
 
-def get_openclaw_config(cfg: dict) -> dict:
-    return cfg.get("openclaw", {})
+def get_hermes_config(cfg: dict) -> dict:
+    return cfg.get("hermes", {})
 
 
-OPENCLAW_JSON_PATH = Path.home() / ".openclaw" / "openclaw.json"
-
-
-def get_openclaw_hook_token(openclaw_json_path: Path = None) -> str:
-    """Read hooks.token from openclaw.json."""
-    path = openclaw_json_path or OPENCLAW_JSON_PATH
-    if not path.exists():
-        return ""
-    try:
-        with open(path) as f:
-            data = json.load(f)
-        return data.get("hooks", {}).get("token", "")
-    except (json.JSONDecodeError, OSError):
-        return ""
 
 
 def config_get(cfg: dict, dotted_key: str):

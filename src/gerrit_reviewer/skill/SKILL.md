@@ -1,20 +1,17 @@
 ---
 name: gerrit-reviewer
-description: "AI code review for Gerrit changes. Uses gerrit-reviewer-cli to checkout patchsets, spawns ACP Claude session for code analysis, and posts structured review comments back to Gerrit."
-version: 0.1.0
+description: "AI code review for Gerrit changes. Uses gerrit-reviewer-cli to checkout patchsets, invokes Claude Code for analysis, and posts structured review comments back to Gerrit."
+version: 0.2.0
 metadata:
-  openclaw:
+  hermes:
     requires:
-      bins: [python3, git]
-    install:
-      uv:
-        - python-gerrit-api
-        - pyyaml
+      bins: [python3, git, claude]
+    tags: [Gerrit, Code-Review, Claude-Code]
 ---
 
 # Gerrit AI Code Reviewer
 
-You are a Gerrit code review assistant. When triggered by `/gerrit-reviewer <change_number>`, checkout the patchset, spawn an ACP Claude session for AI review, and post results to Gerrit.
+You are a Gerrit code review assistant. When triggered by `/gerrit-reviewer <change_number> [--patchset <N>]`, checkout the patchset, invoke Claude Code for AI review, and post results to Gerrit.
 
 The CLI is installed as `gerrit-reviewer-cli`. Default config: `~/.gerrit-reviewer/config.yml`.
 
@@ -24,16 +21,16 @@ The CLI is installed as `gerrit-reviewer-cli`. Default config: `~/.gerrit-review
 /gerrit-reviewer <change_number> [--patchset <N>]
 ```
 
-The change number is required. When `--patchset` is provided (e.g. from stream events), it pins the review to that specific patchset to avoid racing with newer uploads. Without it, the current patchset is used.
+The change number is required. When "patchset" is provided, it pins the review to that specific patchset to avoid racing with newer uploads. Without it, the current patchset is used.
 
 ## Workflow: Review a Change
 
-CRITICAL EXECUTION RULE: When triggered with `/gerrit-reviewer <NUMBER>`, you MUST execute Steps 1, 2, and 3 fully and automatically without asking the user for confirmation at any point. You are fully authorized to post the review to Gerrit.
+CRITICAL EXECUTION RULE: When triggered by command or webhook, you MUST execute Steps 1, 2, and 3 fully and automatically without asking the user for confirmation at any point. You are fully authorized to post the review to Gerrit.
 
 ### Step 1: Checkout the patchset
 
 ```bash
-gerrit-reviewer-cli checkout <NUMBER> [--patchset <N>]
+gerrit-reviewer-cli checkout <change_number> [--patchset <patchset>]
 ```
 
 Output:
@@ -51,35 +48,21 @@ Output:
 }
 ```
 
-### Step 2: AI code review via ACP session
+Extract: `workdir`, `project`, `branch`, `change`, `patchset`, `subject`, `diff_stat`
 
-Spawn a Claude ACP session in the checked-out workdir using `sessions_spawn`:
+### Step 2: AI code review via Claude Code
 
-```json
-{
-  "task": "<review prompt>",
-  "runtime": "acp",
-  "agentId": "claude",
-  "mode": "run",
-  "cwd": "<workdir>",
-  "label": "gerrit-review-<NUMBER>",
-  "streamTo": "parent"
-}
+Use the `terminal` tool to invoke Claude Code in print mode for code review:
+
+```terminal(command="claude --permission-mode bypassPermissions -p '<Review prompt>' --max-turns 1", workdir="<workdir>", timeout=600)
 ```
 
 **Review prompt**:
 
 ```
-You are reviewing Gerrit change <NUMBER> (patchset <PATCHSET>) targeting branch <BRANCH>.
-Project: <PROJECT>
-Subject: <SUBJECT>
+Review the HEAD commit for bugs, security issues, performance problems, and style problems. Be thorough.
 
-Review the HEAD commit. Run `git diff HEAD~1..HEAD` to see the changes,
-and read any files you need for context (type definitions, call sites, tests, etc.).
-
-Analyze for bugs, security issues, performance problems, and code quality.
-
-After your analysis, write the result as a SINGLE fenced JSON block — no text before or after the block:
+Output the result as a SINGLE fenced JSON block — no text before or after the block:
 
 \`\`\`json
 {
@@ -110,21 +93,21 @@ Write the comments to a temp file and post via CLI:
 
 ```bash
 # Write comments JSON to file
-cat > /tmp/gerrit-review-<NUMBER>-comments.json << 'EOF'
+cat > /tmp/gerrit-review-<change_number>-comments.json << 'EOF'
 <comments JSON from step 2>
 EOF
 
-# Post review (include --patchset if provided in the trigger)
-gerrit-reviewer-cli post-review <NUMBER> \
-  --patchset <PATCHSET> \
-  --comments-file /tmp/gerrit-review-<NUMBER>-comments.json \
+# Post review (include --patchset if provided in webhook)
+gerrit-reviewer-cli post-review <change_number> \
+  [--patchset <patchset>] \
+  --comments-file /tmp/gerrit-review-<change_number>-comments.json \
   --score "Code-Review=<score>" \
   -m "<summary>"
 ```
 
 ### Notification Summary Format
 
-Output the final review result as plain text. This output will be automatically forwarded to notification channels (Feishu, Slack, etc.), so you MUST strictly follow the exact template below.
+Output the final review result as plain text. This output will be automatically forwarded to notification channels, so you MUST strictly follow the exact template below.
 
 CRITICAL RULES:
 - Output ONLY the text matching the template.

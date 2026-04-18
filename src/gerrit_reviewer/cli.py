@@ -5,7 +5,7 @@ Default config: ~/.gerrit-reviewer/config.yml
 
 Subcommands:
     config         View and edit configuration
-    init           Install skill, systemd services, and generate default config
+    init           Generate config, install skill, and install systemd services
     uninstall      Remove skill and systemd services
     list-changes   Query changes from Gerrit
     get-diff       Get change details and file diffs via Gerrit API
@@ -25,6 +25,8 @@ import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
+import httpx
+import time
 
 import yaml
 from gerrit import GerritClient
@@ -400,8 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("submit", parents=[shared], help="Submit (merge) a change")
     p.add_argument("change", help="Change number or ID")
 
-    # install-skill / uninstall-skill (no Gerrit config needed)
-    p = sub.add_parser("init", help="Install skill and systemd services")
+    # init / uninstall
+    p = sub.add_parser("init", help="Generate config, install skill, and install systemd services")
     p.add_argument("--set", action="append", metavar="KEY=VALUE",
                    help="Set config value non-interactively, e.g. --set gerrit.url=https://...")
     sub.add_parser("uninstall", help="Remove skill and systemd services")
@@ -410,15 +412,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _install_skill():
-    """Copy package skill/ dir into ~/.openclaw/skills/gerrit-reviewer."""
+    """Copy SKILL.md to ~/.agents/skills/gerrit-reviewer/."""
     skill_src = Path(files("gerrit_reviewer.skill").joinpath("SKILL.md")).parent
-    target = Path.home() / ".openclaw" / "skills" / "gerrit-reviewer"
+    target = Path.home() / ".agents" / "skills" / "gerrit-reviewer"
 
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if target.exists():
-        answer = input(f"Skill already installed at {target}\nKeep current skill? [Y/n] ").strip().lower()
-        if answer not in ("n", "no"):
+        answer = input(f"Skill already installed at {target}\nOverwrite? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
             print("Kept current skill.")
             return
         shutil.rmtree(target)
@@ -426,136 +428,18 @@ def _install_skill():
     else:
         print(f"Installed: {target}")
 
-    shutil.copytree(skill_src, target, ignore=shutil.ignore_patterns("__init__.py"))
+    shutil.copytree(skill_src, target, ignore=shutil.ignore_patterns("__init__.py", "__pycache__"))
 
 
 def _uninstall_skill():
-    """Remove skill directory from ~/.openclaw/skills/."""
-    target = Path.home() / ".openclaw" / "skills" / "gerrit-reviewer"
+    """Remove skill directory from ~/.agents/skills/."""
+    target = Path.home() / ".agents" / "skills" / "gerrit-reviewer"
 
     if target.exists():
         shutil.rmtree(target)
         print(f"Removed: {target}")
     else:
         print(f"Not installed: {target}")
-
-
-HOOK_TRANSFORMS = [
-    "gerrit-review.js",
-]
-
-
-GERRIT_REVIEW_MAPPING = {
-    "match": {"path": "gerrit-review"},
-    "action": "agent",
-    "allowUnsafeExternalContent": True,
-    "transform": {
-        "module": "gerrit-review.js",
-        "export": "transformGerritReview",
-    },
-}
-
-
-def _load_openclaw_json() -> tuple[Path, dict]:
-    """Load openclaw.json, return (path, data)."""
-    path = Path.home() / ".openclaw" / "openclaw.json"
-    if path.exists():
-        return path, json.loads(path.read_text())
-    return path, {}
-
-
-def _save_openclaw_json(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-
-
-def _config_openclaw():
-    """Copy hook transform files and configure openclaw.json (hooks and ACP)."""
-    # 1. Install transform files
-    transforms_src = Path(files("gerrit_reviewer.hooks.transforms").joinpath(HOOK_TRANSFORMS[0])).parent
-    target_dir = Path.home() / ".openclaw" / "hooks" / "transforms"
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    for name in HOOK_TRANSFORMS:
-        src = transforms_src / name
-        target = target_dir / name
-        shutil.copy2(src, target)
-        print(f"Installed: {target}")
-
-    # 2. Configure openclaw.json hooks by editing the file directly
-    oc_path, oc_data = _load_openclaw_json()
-    hooks = oc_data.setdefault("hooks", {})
-
-    hooks["enabled"] = True
-    hooks.setdefault("token", secrets.token_hex(24))
-    hooks.setdefault("path", "/hooks")
-    hooks["allowRequestSessionKey"] = True
-
-    mappings = hooks.setdefault("mappings", [])
-    # Update existing gerrit-review mapping or append
-    for i, m in enumerate(mappings):
-        if m.get("match", {}).get("path") == "gerrit-review":
-            mappings[i] = GERRIT_REVIEW_MAPPING
-            break
-    else:
-        mappings.append(GERRIT_REVIEW_MAPPING)
-
-    # 3. Enable ACP and acpx plugin
-    acp = oc_data.setdefault("acp", {})
-    acp["enabled"] = True
-    acp.setdefault("backend", "acpx")
-    acp.setdefault("defaultAgent", "claude")
-    allowed = acp.setdefault("allowedAgents", [])
-    if "claude" not in allowed:
-        allowed.append("claude")
-    acp.setdefault("maxConcurrentSessions", 4)
-    acp.setdefault("stream", {"coalesceIdleMs": 300, "maxChunkChars": 1200})
-    acp.setdefault("runtime", {"ttlMinutes": 120})
-
-    plugins = oc_data.setdefault("plugins", {})
-    entries = plugins.setdefault("entries", {})
-    acpx = entries.setdefault("acpx", {})
-    acpx["enabled"] = True
-    acpx_config = acpx.setdefault("config", {})
-    acpx_config["permissionMode"] = "approve-all"
-    acpx_config["nonInteractivePermissions"] = "deny"
-
-    # 4. Configure tools.exec.pathPrepend so openclaw can find gerrit-reviewer-cli
-    cli_path = shutil.which("gerrit-reviewer-cli")
-    if cli_path:
-        cli_dir = str(Path(cli_path).parent)
-        tools = oc_data.setdefault("tools", {})
-        exec_cfg = tools.setdefault("exec", {})
-        prepend = exec_cfg.setdefault("pathPrepend", [])
-        if cli_dir not in prepend:
-            prepend.append(cli_dir)
-
-    _save_openclaw_json(oc_path, oc_data)
-    print(f"Configured openclaw hooks (token: {hooks['token'][:8]}...) and enabled ACP")
-
-
-def _unconfig_openclaw():
-    """Remove hook transform files and gerrit-review mapping from openclaw.json (preserves ACP config)."""
-    target_dir = Path.home() / ".openclaw" / "hooks" / "transforms"
-
-    for name in HOOK_TRANSFORMS:
-        target = target_dir / name
-        if target.exists():
-            target.unlink()
-            print(f"Removed: {target}")
-        else:
-            print(f"Not installed: {target}")
-
-    oc_path, oc_data = _load_openclaw_json()
-    mappings = oc_data.get("hooks", {}).get("mappings", [])
-    original_len = len(mappings)
-    mappings[:] = [m for m in mappings if m.get("match", {}).get("path") != "gerrit-review"]
-    if len(mappings) < original_len:
-        _save_openclaw_json(oc_path, oc_data)
-        print("Removed gerrit-review mapping from openclaw hooks")
-        print("Please restart openclaw gateway for changes to take effect.")
-    else:
-        print("No gerrit-review mapping found in openclaw hooks")
 
 
 SYSTEMD_SERVICES = [
@@ -615,12 +499,134 @@ def _uninstall_services():
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
 
 
+def _setup_hermes_webhook():
+    """Setup Hermes webhook"""
+    # Configure webhook platform in ~/.hermes/config.yaml
+    hermes_cfg_path = Path.home() / ".hermes" / "config.yaml"
+    hermes_cfg_data = {}
+    if hermes_cfg_path.exists():
+        shutil.copy2(hermes_cfg_path, hermes_cfg_path.with_suffix(hermes_cfg_path.suffix + ".bak"))
+        with open(hermes_cfg_path) as f:
+            hermes_cfg_data = yaml.safe_load(f) or {}
+
+    platforms = hermes_cfg_data.setdefault("platforms", {})
+    webhook = platforms.setdefault("webhook", {})
+    webhook["enabled"] = True
+    extra = webhook.setdefault("extra", {})
+
+    # Use existing values if present, otherwise set defaults
+    extra.setdefault("host", "0.0.0.0")
+    host = extra.setdefault("port", 8644)
+    extra.setdefault("secret", secrets.token_hex(32))
+
+    # Save hermes config
+    hermes_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(hermes_cfg_path, "w") as f:
+        yaml.dump(hermes_cfg_data, f, default_flow_style=False, sort_keys=False)
+
+    print(f"Setup Hermes webhook platform in {hermes_cfg_path}")
+
+
+def _verify_webhook_server():
+    """Verify the webhook server is running and accepting connections."""
+    print("Waiting for webhook server to be ready...")
+    max_retries = 30
+    retry_interval = 1
+
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client() as client:
+                response = client.get("http://localhost:8644/health", timeout=2.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status") == "ok":
+                        print(f"Webhook server is ready: {data}")
+                        return
+        except (httpx.ConnectError, httpx.TimeoutException, ValueError):
+            pass
+
+        if attempt < max_retries - 1:
+            print(f"Attempt {attempt + 1}/{max_retries}: Server not ready, retrying in {retry_interval}s...")
+            time.sleep(retry_interval)
+
+    print("Error: Webhook server failed to start", file=sys.stderr)
+    sys.exit(1)
+
+
+def _subscribe_hermes_webhook(cfg: dict):
+    """Subscribe to Gerrit events with Hermes CLI."""
+    prompt = "/gerrit-reviewer {change_number} --patchset {patchset}"
+    events = "gerrit_patchset_created"
+    description = "Review Gerrit change"
+    skills = "gerrit-reviewer"
+    deliver = cfg.get("hermes", {}).get("deliver", "log")
+    name = "gerrit-reviewer"
+
+    cmd = [
+        "hermes", "webhook", "add",
+        "--prompt", prompt,
+        "--events", events,
+        "--description", description,
+        "--skills", skills,
+        "--deliver", deliver,
+        name,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        output = result.stdout.strip()
+
+        # Parse output to extract URL and secret
+        url = None
+        secret = None
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("URL:"):
+                url = line.split(":", 1)[1].strip()
+            elif line.startswith("Secret:"):
+                secret = line.split(":", 1)[1].strip()
+
+        if not url or not secret:
+            print("Error: Could not parse webhook URL or secret from hermes output", file=sys.stderr)
+            print(f"Output:\n{output}", file=sys.stderr)
+            sys.exit(1)
+
+        # Update config with webhook details
+        hermes = cfg.setdefault("hermes", {})
+        hermes["url"] = url
+        hermes["webhook_secret"] = secret
+
+        save_config(cfg)
+        print(f"Subscription created: {url}")
+        print(f"Secret saved to config")
+
+    except Exception as e:
+        print(f"Error: Failed to subscribe Hermes webhook: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _unsubscribe_hermes_webhook():
+    """Unsubscribe Hermes webhook."""
+    name = "gerrit-reviewer"
+
+    try:
+        subprocess.run(
+            ["hermes", "webhook", "rm", name],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        print(f"Unsubscribed Hermes webhook: {name}")
+    except Exception as e:
+        print(f"Error: Failed to unsubscribe Hermes webhook: {e}", file=sys.stderr)
+
+
 def cmd_init(args):
-    """Install skill, systemd services, and generate config."""
+    """Generate config, install skill, and install systemd services."""
     print("==> Checking dependencies...")
-    if not shutil.which("openclaw"):
-        print("Error: openclaw is not installed or not in PATH.", file=sys.stderr)
-        print("Install OpenClaw first: https://openclaw.ai", file=sys.stderr)
+    if not shutil.which("hermes"):
+        print("Error: hermes is not installed or not in PATH.", file=sys.stderr)
+        print("Install hermes first: https://hermes-agent.nousresearch.com", file=sys.stderr)
         sys.exit(1)
 
     print("==> Configuring...")
@@ -636,23 +642,26 @@ def cmd_init(args):
         save_config(cfg)
         print(f"Config saved to {DEFAULT_CONFIG_PATH}")
     else:
-        interactive_config()
+        cfg = interactive_config()
 
+    print("==> Setting up Hermes webhook...")
+    _setup_hermes_webhook()
+    _verify_webhook_server()
+    print("==> Subscribing to Gerrit events with Hermes...")
+    _subscribe_hermes_webhook(cfg)
     print("==> Installing skill...")
     _install_skill()
-    print("==> Configuring OpenClaw integration...")
-    _config_openclaw()
     print("==> Installing systemd services...")
     _install_services()
-    print("Please restart openclaw gateway for changes to take effect.")
 
 
 def cmd_uninstall(args):
-    """Remove skill, hook transforms, and systemd services."""
+    """Remove skill, systemd services, and webhook."""
+    print("==> Removing webhook...")
+    cfg = load_config()
+    _unsubscribe_hermes_webhook()
     print("==> Removing skill...")
     _uninstall_skill()
-    print("==> Removing OpenClaw integration...")
-    _unconfig_openclaw()
     print("==> Removing systemd services...")
     _uninstall_services()
 
