@@ -18,6 +18,7 @@ Subcommands:
 """
 
 import argparse
+import fcntl
 import json
 import secrets
 import shutil
@@ -25,6 +26,7 @@ import subprocess
 import sys
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlparse
 import httpx
 import time
 
@@ -62,7 +64,7 @@ def get_clone_url(cfg: dict, project: str) -> str:
     template = cfg.get("clone_url")
     if template:
         return template.replace("{project}", project)
-    from urllib.parse import urlparse
+
     parsed = urlparse(cfg["url"].rstrip("/"))
     host = parsed.hostname
     username = cfg.get("username", "")
@@ -80,6 +82,22 @@ def _run_git(args: list[str], cwd: str = None) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def _fetch_reference(ref_dir: Path, clone_url: str):
+    """Ensure bare reference repo exists and is up-to-date. File-locked per project."""
+    ref_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = ref_dir.with_suffix(".lock")
+    lock_file.touch(exist_ok=True)
+    with open(lock_file, "r") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            if not ref_dir.exists():
+                _run_git(["clone", "--bare", clone_url, str(ref_dir)])
+            else:
+                _run_git(["fetch", "origin"], cwd=str(ref_dir))
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _checkout_patchset(client: GerritClient, cfg: dict, change_id, patchset="current"):
@@ -101,28 +119,24 @@ def _checkout_patchset(client: GerritClient, cfg: dict, change_id, patchset="cur
 
     cache_root = get_cache_root(cfg)
     clone_url = get_clone_url(cfg, project)
-    project_dir = cache_root / project
+    ref_dir = cache_root / f"{project}.git"
+    work_dir = cache_root / project / str(change_number) / str(patchset_num)
 
-    if project_dir.exists():
-        if (project_dir / ".git").exists():
-            _run_git(["fetch", "origin"], cwd=str(project_dir))
-        else:
-            shutil.rmtree(project_dir)
-            _run_git(["clone", clone_url, str(project_dir)])
-    else:
-        cache_root.mkdir(parents=True, exist_ok=True)
-        _run_git(["clone", clone_url, str(project_dir)])
+    _fetch_reference(ref_dir, clone_url)
 
-    _run_git(["clean", "-fd"], cwd=str(project_dir))
-    _run_git(["checkout", "-f", f"origin/{branch}"], cwd=str(project_dir))
-    _run_git(["fetch", "origin", ref], cwd=str(project_dir))
-    _run_git(["checkout", "-f", "FETCH_HEAD"], cwd=str(project_dir))
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.parent.mkdir(parents=True, exist_ok=True)
+    _run_git(["clone", "--reference", str(ref_dir), clone_url, str(work_dir)])
+
+    _run_git(["fetch", "origin", ref], cwd=str(work_dir))
+    _run_git(["checkout", "-f", "FETCH_HEAD"], cwd=str(work_dir))
 
     # Diff stats
-    diff_stat = _run_git(["diff", "--stat", "HEAD~1..HEAD"], cwd=str(project_dir))
+    diff_stat = _run_git(["diff", "--stat", "HEAD~1..HEAD"], cwd=str(work_dir))
 
     return {
-        "workdir": str(project_dir),
+        "workdir": str(work_dir),
         "project": project,
         "branch": branch,
         "change": change_number,
@@ -336,6 +350,23 @@ def cmd_submit(client: GerritClient, cfg: dict, args):
         raise RuntimeError(f"Submit failed ({resp.status_code}): {body}")
 
 
+def cmd_cleanup(client: GerritClient, cfg: dict, args):
+    """Remove the work directory for a specific change/patchset."""
+    cache_root = get_cache_root(cfg)
+    change = str(args.change)
+    patchset = str(args.patchset)
+    removed = []
+    if cache_root.exists():
+        for project_dir in cache_root.iterdir():
+            if not project_dir.is_dir() or project_dir.name.endswith(".git"):
+                continue
+            ps_dir = project_dir / change / patchset
+            if ps_dir.is_dir():
+                shutil.rmtree(ps_dir)
+                removed.append(str(ps_dir))
+    print(json.dumps({"status": "ok", "removed": removed}, indent=2, ensure_ascii=False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gerrit-reviewer-cli",
@@ -401,6 +432,11 @@ def build_parser() -> argparse.ArgumentParser:
     # submit
     p = sub.add_parser("submit", parents=[shared], help="Submit (merge) a change")
     p.add_argument("change", help="Change number or ID")
+
+    # cleanup
+    p = sub.add_parser("cleanup", parents=[shared], help="Remove per-patchset work directory for a change")
+    p.add_argument("change", help="Change number")
+    p.add_argument("--patchset", required=True, help="Patchset number to clean up")
 
     # init / uninstall
     p = sub.add_parser("init", help="Generate config, install skill, and install systemd services")
@@ -555,8 +591,8 @@ def _verify_webhook_server():
 
 def _subscribe_hermes_webhook(cfg: dict):
     """Subscribe to Gerrit events with Hermes CLI."""
-    prompt = "/gerrit-reviewer {change_number} --patchset {patchset}"
-    events = "gerrit_patchset_created"
+    prompt = "/gerrit-reviewer {change} --patchset {patchset}"
+    events = "review_request"
     description = "Review Gerrit change"
     skills = "gerrit-reviewer"
     deliver = cfg.get("hermes", {}).get("deliver", "log")
@@ -654,6 +690,12 @@ def cmd_init(args):
     print("==> Installing systemd services...")
     _install_services()
 
+    parsed = urlparse(cfg["url"].rstrip("/"))
+    host = parsed.hostname
+    ssh_port = cfg.get("ssh_port", 29418)
+    print(f"Add Gerrit host to SSH known_hosts, run:")
+    print(f"ssh-keyscan -p {ssh_port} {host} >> ~/.ssh/known_hosts")
+
 
 def cmd_uninstall(args):
     """Remove skill, systemd services, and webhook."""
@@ -733,6 +775,7 @@ def main():
         "remove-reviewer": cmd_remove_reviewer,
         "approve": cmd_approve,
         "submit": cmd_submit,
+        "cleanup": cmd_cleanup,
     }
 
     try:

@@ -24,8 +24,6 @@ DEFAULT_CONFIG = {
         # "clone_url": "ssh://{username}@{host}:{port}/{project}",
     },
     "stream": {
-        "allowed_events": ["patchset-created"],
-        "allowed_projects": [],
         "reconnect_delay": 5,
         "log_level": "INFO",
     },
@@ -46,8 +44,6 @@ INIT_FIELDS = [
     ("gerrit.ssh_key", "SSH private key path"),
     ("gerrit.cache_dir", "Git repo cache directory"),
     ("hermes.deliver", "Webhook deliver target (log/feishu/weixin/...)"),
-    ("stream.allowed_events", "Allowed events (comma-separated)"),
-    ("stream.allowed_projects", "Allowed projects (comma-separated)"),
     ("stream.reconnect_delay", "Reconnect delay in seconds"),
 ]
 

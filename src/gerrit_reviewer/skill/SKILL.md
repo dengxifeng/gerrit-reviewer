@@ -25,7 +25,9 @@ The change number is required. When "patchset" is provided, it pins the review t
 
 ## Workflow: Review a Change
 
-CRITICAL EXECUTION RULE: When triggered by command or webhook, you MUST execute Steps 1, 2, and 3 fully and automatically without asking the user for confirmation at any point. You are fully authorized to post the review to Gerrit.
+CRITICAL EXECUTION RULE: When triggered by command or webhook, you MUST execute Steps 1, 2, 3, and 4 fully and automatically without asking the user for confirmation at any point. You are fully authorized to post the review to Gerrit.
+
+FAILURE HANDLING: If ANY step fails — command returns a non-zero exit code, output cannot be parsed, or the result is unexpected — STOP immediately. Do NOT retry, do NOT attempt alternative approaches, do NOT improvise workarounds. Instead, report the failure using the format in the "Error Notification Format" section at the end of this workflow.
 
 ### Step 1: Checkout the patchset
 
@@ -54,7 +56,7 @@ Extract: `workdir`, `project`, `branch`, `change`, `patchset`, `subject`, `diff_
 
 Use the `terminal` tool to invoke Claude Code in print mode for code review:
 
-```terminal(command="claude --permission-mode bypassPermissions -p '<Review prompt>' --max-turns 1", workdir="<workdir>", timeout=600)
+```terminal(command="cd <workdir> && claude --permission-mode bypassPermissions --model claude-opus-4-6 -p '<Review prompt>'", timeout=600)
 ```
 
 **Review prompt**:
@@ -105,6 +107,14 @@ gerrit-reviewer-cli post-review <change_number> \
   -m "<summary>"
 ```
 
+### Step 4: Cleanup work directory
+
+```bash
+gerrit-reviewer-cli cleanup <change_number> --patchset <patchset>
+```
+
+Removes the work directory for this specific patchset to free disk space.
+
 ### Notification Summary Format
 
 Output the final review result as plain text. This output will be automatically forwarded to notification channels, so you MUST strictly follow the exact template below.
@@ -142,6 +152,21 @@ Score: Code-Review +1
 
 No issues found.
 ```
+
+### Error Notification Format
+
+When a step fails, output ONLY the following — no conversational text, no retries:
+
+```
+Gerrit AI Review — FAILED
+Change: <change_number>
+Failed at: Step <N> (<step name>)
+Error: <one-line description of what went wrong>
+```
+
+Step names: "Checkout" (1), "AI Review" (2), "Post Review" (3), "Cleanup" (4).
+
+If the failing command produced output, include up to 3 lines of relevant error output after the `Error:` line, indented with two spaces.
 
 ## CLI Reference
 

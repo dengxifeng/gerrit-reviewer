@@ -17,8 +17,6 @@ Environment variables override config values for backward compatibility:
     GERRIT_SSH_KEY        Override gerrit.ssh_key
     HERMES_URL            Override hermes.url
     HERMES_WEBHOOK_SECRET Override hermes.webhook_secret
-    ALLOWED_EVENTS        Override stream.allowed_events (comma-separated)
-    ALLOWED_PROJECTS      Override stream.allowed_projects (comma-separated)
     RECONNECT_DELAY       Override stream.reconnect_delay
     LOG_LEVEL             Override stream.log_level (DEBUG, INFO, WARNING, ERROR)
 """
@@ -83,13 +81,7 @@ def _load_stream_settings(config_path: str = None) -> dict:
         "gerrit_password": gerrit.get("credential", ""),
         "hermes_url": env("HERMES_URL") or hermes.get("url", "http://127.0.0.1:8644"),
         "hermes_webhook_secret": env("HERMES_WEBHOOK_SECRET") or hermes.get("webhook_secret", ""),
-        "allowed_events": set(
-            env("ALLOWED_EVENTS").split(",") if env("ALLOWED_EVENTS")
-            else stream.get("allowed_events", ["patchset-created"])
-        ),
-        "allowed_projects": set(
-            p.strip() for p in env("ALLOWED_PROJECTS").split(",") if p.strip()
-        ) if env("ALLOWED_PROJECTS") else set(stream.get("allowed_projects", [])),
+        "allowed_events": ["patchset-created", "reviewer-added"],
         "reconnect_delay": int(env("RECONNECT_DELAY") or stream.get("reconnect_delay", 5)),
         "log_level": env("LOG_LEVEL") or stream.get("log_level", "INFO"),
     }
@@ -171,45 +163,32 @@ def stream_events(ssh_client: paramiko.SSHClient, settings: dict):
     channel.close()
 
 
-def build_webhook_payload(event: dict) -> dict:
-    """Build Hermes webhook payload from a Gerrit event."""
-    change = event.get("change", {})
-    patchset = event.get("patchSet", {})
-
-    payload = {
-        "event_type": "gerrit_patchset_created",
-        "change_number": change.get("number", "unknown"),
-    }
-
-    # Include patchset number if present
-    patchset_num = patchset.get("number")
-    if patchset_num:
-        payload["patchset"] = patchset_num
-
-    return payload
-
-
-def is_self_reviewer(change_number, gerrit_client: GerritClient, settings: dict) -> bool:
+def is_self_reviewer(change, gerrit_client: GerritClient, settings: dict) -> bool:
     """Check if the user is a reviewer on the given change."""
     if not gerrit_client:
         return False
     try:
-        change = gerrit_client.changes.get(change_number)
+        change = gerrit_client.changes.get(change)
         reviewers = change.reviewers.list()
         username = settings["gerrit_username"]
         for reviewer in reviewers:
             if reviewer.get("username") == username or reviewer.get("name") == username:
                 return True
     except Exception as e:
-        logger.debug("Failed to check reviewer status for change %s: %s", change_number, e)
+        logger.debug("Failed to check reviewer status for change %s: %s", change, e)
     return False
 
 
-def forward_to_hermes(payload: dict, change_number, settings: dict) -> bool:
+def forward_to_hermes(change: str, patchset: str, settings: dict) -> bool:
     """Send payload to Hermes webhook. Returns True on success."""
     url = settings["hermes_url"]
     secret = settings["hermes_webhook_secret"]
 
+    payload = {
+        "event_type": "review_request",
+        "change": change,
+        "patchset": patchset,
+    }
     payload_json = json.dumps(payload, ensure_ascii=False)
     payload_bytes = payload_json.encode("utf-8")
 
@@ -217,6 +196,7 @@ def forward_to_hermes(payload: dict, change_number, settings: dict) -> bool:
     signature = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
 
     headers = {
+        "X-Request-ID": f"review_require:{change}:{patchset}",
         "Content-Type": "application/json",
         "X-Webhook-Signature": signature,
     }
@@ -226,11 +206,11 @@ def forward_to_hermes(payload: dict, change_number, settings: dict) -> bool:
             resp = http.post(url, content=payload_bytes, headers=headers)
         logger.info(
             "Forwarded change %s → Hermes: %d %s",
-            change_number, resp.status_code, resp.text[:200],
+            payload.get("change", "unknown"), resp.status_code, resp.text[:200],
         )
         return resp.status_code < 400
     except Exception as e:
-        logger.error("Failed to forward change %s: %s", change_number, e)
+        logger.error("Failed to forward change %s: %s", payload.get("change", "unknown"), e)
         return False
 
 
@@ -262,10 +242,6 @@ def main():
         logger.error("hermes.webhook_secret must be set (config or HERMES_WEBHOOK_SECRET env var).")
         sys.exit(1)
 
-    logger.info("Config: %s", args.config)
-    if settings["allowed_projects"]:
-        logger.info("Filtering projects: %s", settings["allowed_projects"])
-
     # Create Gerrit REST client for reviewer checks
     gerrit_client = None
     if settings["gerrit_url"] and settings["gerrit_username"]:
@@ -274,6 +250,9 @@ def main():
             username=settings["gerrit_username"],
             password=settings["gerrit_password"],
         )
+    else:
+        logger.error("gerrit.url and gerrit.username must be set to enable reviewer checks.")
+        sys.exit(1)
 
     while not _shutdown:
         ssh_client = None
@@ -285,20 +264,30 @@ def main():
                 if event_type not in settings["allowed_events"]:
                     continue
 
-                change_number = event.get("change", {}).get("number", "?")
+                change = event.get("change", {}).get("number", "?")
+                patchset = event.get("patchSet", {}).get("number", "?")
                 project = event.get("change", {}).get("project", "")
-                logger.info("Received %s for change %s (project: %s)", event_type, change_number, project)
+                logger.info("Received %s for change %s/%s (project: %s)",
+                    event_type, change, patchset, project)
 
-                in_allowed = project in settings["allowed_projects"]
-                if not in_allowed and not is_self_reviewer(change_number, gerrit_client, settings):
-                    logger.info(
-                        "Skipping change %s: project %s not in allowed_projects and user is not a reviewer",
-                        change_number, project,
-                    )
+                if event_type == "patchset-created":
+                    kind = event.get("patchSet", {}).get("kind", "")
+                    if kind != "REWORK":
+                        logger.info("Skipping change %s: patchset kind is %s, not REWORK", change, kind)
+                        continue
+                    if not is_self_reviewer(change, gerrit_client, settings):
+                        logger.info("Skipping change %s: user is not a reviewer", change)
+                        continue
+                elif event_type == "reviewer-added":
+                    reviewer_username = event.get("reviewer", {}).get("username", "")
+                    if reviewer_username != settings["gerrit_username"]:
+                        logger.info("Skipping change %s: user is not a reviewer", change)
+                        continue
+                else:
+                    logger.info("Skipping unsupported event type: %s", event_type)
                     continue
 
-                payload = build_webhook_payload(event)
-                forward_to_hermes(payload, change_number, settings)
+                forward_to_hermes(change, patchset, settings)
 
         except paramiko.ssh_exception.SSHException as e:
             logger.error("SSH error: %s", e)

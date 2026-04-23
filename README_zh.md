@@ -1,14 +1,14 @@
 # gerrit-reviewer
 
-基于 AI 的 Gerrit 代码审查系统。它监听 Gerrit 事件，利用 AI 自动审查代码变更，并将结构化的审查评论回写到 Gerrit。
+基于 AI 的 Gerrit 代码审查系统。它监听 Gerrit 事件，利用 AI 自动审查代码变更，并将结构化的审查评论回写到 Gerrit。通过 [Hermes](https://hermes-agent.nousresearch.com) 实现基于 Agent 的自动审查工作流。
 
 ## 功能特性
 
 - **自动化代码审查** — 监听 Gerrit 事件流，在新 patchset 提交时自动触发 AI 代码审查，并将带评分的结构化审查评论发布到 Gerrit。
 - **CLI 命令行工具** — 查询变更、检出 patchset、发布审查评论、管理审查人、批准和提交变更，所有操作均可通过命令行完成。
-- **事件流守护进程** — 长期运行的后台服务，通过 SSH 连接 Gerrit，监听事件（如 `patchset-created`），并将事件转发到 [OpenClaw](https://openclaw.ai) webhook 以触发自动审查。
-- **OpenClaw 集成** — 作为 OpenClaw 技能运行：事件流触发 OpenClaw Agent 检出代码、启动 Claude 会话进行分析，并将审查结果回写到 Gerrit。
-- **灵活的配置** — 统一的 YAML 配置文件，支持环境变量覆盖、项目白名单和基于审查人的过滤。
+- **事件流守护进程** — 长期运行的后台服务，通过 SSH 连接 Gerrit，监听事件（`patchset-created`、`reviewer-added`），并将事件转发到 [Hermes](https://hermes-agent.nousresearch.com) webhook 以触发自动审查。
+- **Hermes 集成** — 作为 Hermes 技能运行：事件流触发 Hermes Agent 检出代码、启动 Claude 进行分析，并将审查结果回写到 Gerrit。
+- **灵活的配置** — 统一的 YAML 配置文件，支持环境变量覆盖和基于审查人的过滤。
 - **Systemd 服务** — 内置用户级 systemd 服务文件，方便在后台运行事件流守护进程。
 
 ## 环境要求
@@ -16,10 +16,10 @@
 - Python 3.11+
 - Git
 - 可访问的 Gerrit 实例（需支持 SSH 和 REST API）
-- [OpenClaw](https://openclaw.ai)（用于自动审查工作流）
+- [Hermes](https://hermes-agent.nousresearch.com)（用于自动审查工作流）
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — 自动审查工作流依赖 Claude Code，使用前请确保已安装并初始化（`claude` 命令可用）。
 
-> **注意：** 如果使用非 Anthropic 官方 API 的第三方平台，请在 `~/.openclaw/.env` 中添加以下配置：
+> **注意：** 如果使用非 Anthropic 官方 API 的第三方平台，请在 `~/.hermes/.env` 中添加以下配置：
 >
 > ```bash
 > ANTHROPIC_BASE_URL=https://your-api-provider.example.com
@@ -36,7 +36,7 @@ pip install .
 
 ### 初始化
 
-运行交互式配置向导，设置 Gerrit 凭据，安装 OpenClaw 技能、webhook 转换器和 systemd 服务：
+运行交互式配置向导，设置 Gerrit 凭据，安装 Hermes 技能、webhook 订阅和 systemd 服务：
 
 ```bash
 gerrit-reviewer-cli init
@@ -45,8 +45,8 @@ gerrit-reviewer-cli init
 该命令将：
 1. 提示输入 Gerrit URL、用户名、凭据和 SSH 密钥路径
 2. 在 `~/.gerrit-reviewer/config.yml` 生成配置文件
-3. 将 OpenClaw 技能安装到 `~/.openclaw/skills/gerrit-reviewer`
-4. 将 webhook 转换器安装到 `~/.openclaw/hooks/transforms/`
+3. 将 Hermes 技能安装到 `~/.agents/skills/gerrit-reviewer`
+4. 通过 Hermes webhook 订阅 Gerrit 事件
 5. 设置事件流守护进程的用户级 systemd 服务
 
 也可以通过命令行非交互式设置配置项：
@@ -89,6 +89,9 @@ gerrit-reviewer-cli remove-reviewer <change_number> --reviewer user@example.com
 # 批准和提交
 gerrit-reviewer-cli approve <change_number>
 gerrit-reviewer-cli submit <change_number>
+
+# 清理指定 patchset 的工作目录
+gerrit-reviewer-cli cleanup <change_number> --patchset N
 ```
 
 ### 事件流守护进程 (`gerrit-reviewer-stream`)
@@ -113,13 +116,9 @@ systemctl --user enable gerrit-reviewer-stream
 | `GERRIT_SSH_PORT` | SSH 端口（默认：29418） |
 | `GERRIT_SSH_USER` | SSH 用户名 |
 | `GERRIT_SSH_KEY` | SSH 私钥路径 |
-| `OPENCLAW_URL` | OpenClaw 基础 URL |
-| `OPENCLAW_HOOK_TOKEN` | Webhook 令牌 |
-| `OPENCLAW_AGENT_ID` | OpenClaw Agent ID |
-| `DELIVER_CHANNEL` | 投递通道 |
-| `DELIVER_TO` | 投递目标 |
-| `ALLOWED_EVENTS` | 允许的事件类型（逗号分隔） |
-| `ALLOWED_PROJECTS` | 允许的项目名称（逗号分隔） |
+| `HERMES_URL` | Hermes webhook 服务器 URL |
+| `HERMES_WEBHOOK_SECRET` | Webhook HMAC 密钥 |
+| `RECONNECT_DELAY` | 重连延迟（秒） |
 | `LOG_LEVEL` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`） |
 
 ## 构建
@@ -145,11 +144,9 @@ src/gerrit_reviewer/
 ├── stream.py       # 事件流守护进程
 ├── config.py       # 统一的 YAML 配置管理
 ├── log_utils.py    # 滚动日志文件设置
-├── skill/          # OpenClaw 技能定义
+├── skill/          # Hermes 技能定义
 │   └── SKILL.md
-└── hooks/
-    └── transforms/
-        └── gerrit-review.js   # OpenClaw webhook 转换器
+└── systemd/        # 用户级 systemd 服务文件
 ```
 
 ### 核心依赖
@@ -175,7 +172,7 @@ pip install -e .
 - CLI 命令成功时将 JSON 输出到 stdout；失败时将错误信息输出到 stderr 并以退出码 1 退出。
 - 自动审查工作流中的评分限制为 -1/0/+1；+2/-2 和提交操作需要用户明确指示。
 - 事件流守护进程在 SSH 连接断开时会自动重连。
-- `stream.allowed_projects` 为空列表时，仅处理已配置用户作为审查人的变更（而非所有项目）。
+- 事件流守护进程仅处理 `REWORK` 类型且已配置用户为审查人的 `patchset-created` 事件，以及已配置用户被添加为审查人的 `reviewer-added` 事件。
 
 ## 许可证
 

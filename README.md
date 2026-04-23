@@ -1,14 +1,14 @@
 # gerrit-reviewer
 
-AI-powered code review system for Gerrit. It listens to Gerrit events and uses AI to automatically review code changes, posting structured comments back to Gerrit.
+AI-powered code review system for Gerrit. It listens to Gerrit events and uses AI to automatically review code changes, posting structured comments back to Gerrit. Integrates with [Hermes](https://hermes-agent.nousresearch.com) for agent-based automated review workflows.
 
 ## Features
 
 - **Automated Code Review** — Monitors Gerrit stream events, automatically triggers AI-powered code review on new patchsets, and posts structured review comments with scores back to Gerrit.
 - **CLI Tools** — Query changes, checkout patchsets, post reviews, manage reviewers, approve and submit changes — all from the command line.
-- **Stream Daemon** — Long-running service that connects to Gerrit via SSH, listens for events (e.g. `patchset-created`), and forwards them to [OpenClaw](https://openclaw.ai) webhooks for automated review.
-- **OpenClaw Integration** — Works as an OpenClaw skill: stream events trigger an OpenClaw agent that checks out code, spawns a Claude session for analysis, and posts review results.
-- **Flexible Configuration** — Unified YAML config with environment variable overrides, project allowlists, and reviewer-based filtering.
+- **Stream Daemon** — Long-running service that connects to Gerrit via SSH, listens for events (`patchset-created`, `reviewer-added`), and forwards them to [Hermes](https://hermes-agent.nousresearch.com) webhooks for automated review.
+- **Hermes Integration** — Works as a Hermes skill: stream events trigger a Hermes agent that checks out code, invoke Claude for analysis, and posts review results.
+- **Flexible Configuration** — Unified YAML config with environment variable overrides and reviewer-based filtering.
 - **Systemd Service** — Ships with a user systemd service file for running the stream daemon in the background.
 
 ## Requirements
@@ -16,10 +16,10 @@ AI-powered code review system for Gerrit. It listens to Gerrit events and uses A
 - Python 3.11+
 - Git
 - Access to a Gerrit instance (with SSH and REST API)
-- [OpenClaw](https://openclaw.ai) (for automated review workflow)
+- [Hermes](https://hermes-agent.nousresearch.com) (for automated review workflow)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — The automated review workflow depends on Claude Code. Please ensure Claude Code is installed and initialized (`claude` command available) before use.
 
-> **Note:** If you are using a third-party API provider instead of the official Anthropic API, add the following to `~/.openclaw/.env`:
+> **Note:** If you are using a third-party API provider instead of the official Anthropic API, add the following to `~/.hermes/.env`:
 >
 > ```bash
 > ANTHROPIC_BASE_URL=https://your-api-provider.example.com
@@ -36,7 +36,7 @@ pip install .
 
 ### Initialize
 
-Run the interactive setup wizard to configure Gerrit credentials, install the OpenClaw skill, webhook transform, and systemd service:
+Run the interactive setup wizard to configure Gerrit credentials, install the Hermes skill, webhook subscription, and systemd service:
 
 ```bash
 gerrit-reviewer-cli init
@@ -45,8 +45,8 @@ gerrit-reviewer-cli init
 This will:
 1. Prompt for Gerrit URL, username, credential, and SSH key path
 2. Generate the config file at `~/.gerrit-reviewer/config.yml`
-3. Install the OpenClaw skill to `~/.openclaw/skills/gerrit-reviewer`
-4. Install the webhook transform to `~/.openclaw/hooks/transforms/`
+3. Install the Hermes skill to `~/.agents/skills/gerrit-reviewer`
+4. Subscribe to Gerrit events via Hermes webhook
 5. Set up a user systemd service for the stream daemon
 
 You can also set config values non-interactively:
@@ -89,6 +89,9 @@ gerrit-reviewer-cli remove-reviewer <change_number> --reviewer user@example.com
 # Approve and submit
 gerrit-reviewer-cli approve <change_number>
 gerrit-reviewer-cli submit <change_number>
+
+# Clean up work directory for a patchset
+gerrit-reviewer-cli cleanup <change_number> --patchset N
 ```
 
 ### Stream Daemon (`gerrit-reviewer-stream`)
@@ -113,13 +116,9 @@ Environment variables can override config values:
 | `GERRIT_SSH_PORT` | SSH port (default: 29418) |
 | `GERRIT_SSH_USER` | SSH username |
 | `GERRIT_SSH_KEY` | Path to SSH private key |
-| `OPENCLAW_URL` | OpenClaw base URL |
-| `OPENCLAW_HOOK_TOKEN` | Webhook hook token |
-| `OPENCLAW_AGENT_ID` | OpenClaw agent ID |
-| `DELIVER_CHANNEL` | Delivery channel |
-| `DELIVER_TO` | Delivery target |
-| `ALLOWED_EVENTS` | Comma-separated event types |
-| `ALLOWED_PROJECTS` | Comma-separated project names |
+| `HERMES_URL` | Hermes webhook server URL |
+| `HERMES_WEBHOOK_SECRET` | Webhook HMAC secret |
+| `RECONNECT_DELAY` | Reconnect delay in seconds |
 | `LOG_LEVEL` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
 ## Build
@@ -145,11 +144,9 @@ src/gerrit_reviewer/
 ├── stream.py       # Stream-events daemon
 ├── config.py       # Unified YAML config management
 ├── log_utils.py    # Rotating file logger setup
-├── skill/          # OpenClaw skill definition
+├── skill/          # Hermes skill definition
 │   └── SKILL.md
-└── hooks/
-    └── transforms/
-        └── gerrit-review.js   # OpenClaw webhook transform
+└── systemd/        # User systemd service file
 ```
 
 ### Key Dependencies
@@ -175,7 +172,7 @@ pip install -e .
 - CLI commands output JSON to stdout on success; errors go to stderr with exit code 1.
 - Review scores in the automated workflow are constrained to -1/0/+1; +2/-2 and submit require explicit user instruction.
 - The stream daemon auto-reconnects on SSH failures.
-- An empty `stream.allowed_projects` list means only changes where the configured user is already a reviewer will be processed.
+- The stream daemon processes `patchset-created` events only for `REWORK` kind patchsets where the configured user is already a reviewer, and `reviewer-added` events when the configured user is the added reviewer.
 
 ## License
 
