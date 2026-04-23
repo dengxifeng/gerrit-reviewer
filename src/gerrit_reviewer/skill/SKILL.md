@@ -91,7 +91,7 @@ Rules:
 
 ### Step 3: Post review to Gerrit
 
-Write the comments to a temp file and post via CLI:
+Write the comments and summary to temp files, then post via CLI.
 
 ```bash
 # Write comments JSON to file
@@ -99,12 +99,17 @@ cat > /tmp/gerrit-review-<change_number>-comments.json << 'EOF'
 <comments JSON from step 2>
 EOF
 
+# Write summary to file
+cat > /tmp/gerrit-review-<change_number>-summary.txt << 'EOF'
+<summary from step 2>
+EOF
+
 # Post review (include --patchset if provided in webhook)
 gerrit-reviewer-cli post-review <change_number> \
   [--patchset <patchset>] \
   --comments-file /tmp/gerrit-review-<change_number>-comments.json \
   --score "Code-Review=<score>" \
-  -m "<summary>"
+  -m "$(cat /tmp/gerrit-review-<change_number>-summary.txt)"
 ```
 
 ### Step 4: Cleanup work directory
