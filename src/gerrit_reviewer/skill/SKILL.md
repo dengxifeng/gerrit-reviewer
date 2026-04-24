@@ -64,9 +64,7 @@ Use the `terminal` tool to invoke Claude Code in print mode for code review:
 ```
 Review the HEAD commit for bugs, security issues, performance problems, and style problems. Be thorough.
 
-Output the result as a SINGLE fenced JSON block — no text before or after the block:
-
-\`\`\`json
+Output ONLY a valid JSON object to /tmp/gerrit-review-<change_number>-<patchset>.json, no other text:
 {
   "summary": "Overall review summary in 2-3 sentences",
   "score": 0,
@@ -76,7 +74,6 @@ Output the result as a SINGLE fenced JSON block — no text before or after the 
     ]
   }
 }
-\`\`\`
 
 Rules:
 - score: +1 (looks good), 0 (suggestions only), -1 (issues to fix)
@@ -91,25 +88,13 @@ Rules:
 
 ### Step 3: Post review to Gerrit
 
-Write the comments and summary to temp files, then post via CLI.
-
 ```bash
-# Write comments JSON to file
-cat > /tmp/gerrit-review-<change_number>-comments.json << 'EOF'
-<comments JSON from step 2>
-EOF
-
-# Write summary to file
-cat > /tmp/gerrit-review-<change_number>-summary.txt << 'EOF'
-<summary from step 2>
-EOF
-
 # Post review (include --patchset if provided in webhook)
 gerrit-reviewer-cli post-review <change_number> \
   [--patchset <patchset>] \
-  --comments-file /tmp/gerrit-review-<change_number>-comments.json \
-  --score "Code-Review=<score>" \
-  -m "$(cat /tmp/gerrit-review-<change_number>-summary.txt)"
+  --score "Code-Review=$(jq -r '.score' /tmp/gerrit-review-<change_number>-<patchset>.json)" \
+  --message "$(jq -r '.summary' /tmp/gerrit-review-<change_number>-<patchset>.json)" \
+  --comments "$(jq -r '.comments' /tmp/gerrit-review-<change_number>-<patchset>.json)"
 ```
 
 ### Step 4: Cleanup work directory

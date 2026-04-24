@@ -286,13 +286,11 @@ def cmd_post_review(client: GerritClient, cfg: dict, args):
         "drafts": "PUBLISH",
     }
 
-    if args.comments_file:
-        with open(args.comments_file) as f:
-            comments = json.load(f)
-        review_input["comments"] = comments
-
     if args.score:
         review_input["labels"] = _parse_labels(args.score)
+
+    if args.comments:
+        review_input["comments"] = json.loads(args.comments)
 
     result = revision.set_review(review_input)
     print(json.dumps({"status": "ok", "result": str(result)}, ensure_ascii=False))
@@ -408,9 +406,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("post-review", parents=[shared], help="Post review comments and score")
     p.add_argument("change", help="Change number or ID")
     p.add_argument("--patchset", help="Patchset number to review (default: current)")
-    p.add_argument("--message", "-m", help="Review message")
-    p.add_argument("--comments-file", help="JSON file with inline comments")
     p.add_argument("--score", action="append", help="Label score, e.g. Code-Review=+1")
+    p.add_argument("--message", "-m", help="Review message")
+    p.add_argument("--comments", help="JSON file with inline comments")
 
     # add-reviewer
     p = sub.add_parser("add-reviewer", parents=[shared], help="Add reviewers to a change")
